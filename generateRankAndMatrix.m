@@ -11,11 +11,11 @@ function [ranking, comparisonMatrix] = generateRankAndMatrix(n)
     for i = 1:n
         for j = i+1:n
             if ranking(i) < ranking(j)
-                comparisonMatrix(row, i) = 1;  % i is ranked higher than j
-                comparisonMatrix(row, j) = -1; % j is ranked lower than i
+                comparisonMatrix(row, i) = -1;  % i loses to j
+                comparisonMatrix(row, j) = 1; % j beats i
             else
-                comparisonMatrix(row, i) = -1; % i is ranked lower than j
-                comparisonMatrix(row, j) = 1;  % j is ranked higher than i
+                comparisonMatrix(row, i) = 1; % i > j
+                comparisonMatrix(row, j) = -1;  % j < i
             end
             row = row + 1;
         end

@@ -1,10 +1,8 @@
 function [rank] = readScore(score)
-    % Extract indices in descending order
-    [~, sorted_indices] = sort(score, 'descend');
-    
-    % Initialize rank vector
-    rank = zeros(size(score));
-    
-    % Populate vector
-    rank(sorted_indices) = 1:length(score);
+    n = length(score);
+    rank = zeros(1, n); % initialize
+    [~, index] = sort(score, 'descend'); % sort in descending order
+    for i = 1:n
+        rank(index(i)) = i;
+    end
 end
