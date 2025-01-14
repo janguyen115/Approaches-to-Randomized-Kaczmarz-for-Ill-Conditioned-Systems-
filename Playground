@@ -1,0 +1,216 @@
+from random import choice
+import numpy as np
+import matplotlib.pyplot as plt
+from itertools import combinations
+from matplotlib.backends.backend_pdf import PdfPages
+
+def std_matrix(mat):
+    row_norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    return mat / row_norms
+
+def bi_sign(vec):
+    return np.where(vec >= 0, 1, -1)
+
+def hadamard_product(A, b):
+    m, n = A.shape
+    b = b.ravel()
+
+    B = []
+    for i in range(n):
+        B.append(b)
+
+    B = np.array(B)
+    B = np.transpose(B)
+    return -1 * A * B
+
+def sampling_kaczmarz_motzkins(A, x_star, beta, lambd, k, type_, normalize=True):
+    if type_ not in ["hadamard_product", "hadamard_with_pairwise", "hadamard_gaussian_promax", "reduced_matrix"]:
+        raise ValueError("Invalid type. Choose from 'hadamard_product', 'hadamard_with_pairwise', or 'hadamard_gaussian_promax', or 'reduced_matrix'.")
+
+    m, n = A.shape
+    if normalize:
+        norm_xk = np.linalg.norm(x_star)
+        if norm_xk != 0:
+            x_star = x_star / norm_xk
+
+    main_matrix = hadamard_product(A, bi_sign(A @ x_star))
+    additional_matrix = None
+    if type_ == "hadamard_product":
+        additional_matrix = None
+
+    if type_ == "hadamard_with_pairwise":
+        pairwise_rows = []
+        for i in range(m * 10):
+            set_of_indexes = np.random.choice(m, 2, replace=False)
+            pairwise_rows.append(A[set_of_indexes[0], :] - A[set_of_indexes[1], :])
+
+        pairwise_rows = std_matrix(pairwise_rows)
+        additional_matrix = hadamard_product(pairwise_rows, bi_sign(pairwise_rows @ x_star))
+
+    if type_ == "hadamard_gaussian_promax":
+        gaussian_rows = std_matrix(np.random.randn(m, n))
+        additional_matrix = hadamard_product(gaussian_rows, bi_sign(gaussian_rows @ x_star))
+
+    if type_ == "reduced_matrix":
+        gaussian_rows = []
+        fixed_size = max(30, int(m * 0.05))
+        set_of_indexes = np.random.choice(m, fixed_size, replace=False)
+        for i in set_of_indexes:
+            for j in set_of_indexes:
+                if i != j:
+                    gaussian_rows.append(A[i, :] - A[j, :])
+        gaussian_rows = std_matrix(gaussian_rows)
+        additional_matrix = hadamard_product(gaussian_rows, bi_sign(gaussian_rows @ x_star))
+
+
+    xk = np.ones(n)
+    xk_history = [xk.copy()]
+    accuracy_history = []
+    error_history = []
+    lp = lambd
+
+    initial_signs = bi_sign(main_matrix @ x_star).ravel()
+    for iter_num in range(1, k + 1):
+        set_of_indexes = np.random.choice(m, beta, replace=False)
+        product = (main_matrix[set_of_indexes, :] @ xk).ravel()
+        max_element_index = 0
+        min_element_index = 0
+        for i in range(len(product)):
+            if product[i] > product[max_element_index]:
+                max_element_index = i
+
+            if product[i] < product[min_element_index]:
+                min_element_index = i
+
+        max_row = main_matrix[set_of_indexes[max_element_index]]
+        max_projection = product[max_element_index]
+
+        min_row = main_matrix[set_of_indexes[min_element_index]]
+        min_projection = product[min_element_index]
+
+        if additional_matrix is not None:
+            set_of_indexes = np.random.choice(additional_matrix.shape[0], beta, replace=False)
+            product = (additional_matrix[set_of_indexes, :] @ xk).ravel()
+            max_element_index = 0
+            for i in range(len(product)):
+                if product[i] > product[max_element_index]:
+                    max_element_index = i
+
+            if max_projection < product[max_element_index]:
+                max_projection = product[max_element_index]
+                max_row = additional_matrix[set_of_indexes[max_element_index]]
+
+            if min_projection > product[min_element_index]:
+                min_projection = product[min_element_index]
+                min_row = additional_matrix[set_of_indexes[min_element_index]]
+
+            if type_ == "reduced_matrix":
+                max_projection = product[max_element_index]
+            if type_ == "reduced_matrix":
+                min_projection = product[min_element_index]
+
+        xk = xk - (lambd * max(min_projection, 0)) * min_row
+
+        if normalize:
+            norm_xk = np.linalg.norm(xk)
+            if norm_xk != 0:
+                xk = xk / norm_xk
+
+        xk_history.append(xk.copy())
+        accuracy_history.append(np.sum(bi_sign(main_matrix @ xk).ravel() == initial_signs) / m)
+
+        error = np.linalg.norm(xk - x_star.ravel()) ** 2
+        error_history.append(error)
+
+    return xk_history, accuracy_history, error_history
+
+
+def run_experiments():
+    m = 1000
+    n = 10
+    k = 2000
+    G = std_matrix(np.random.randn(m, n))
+    x_star = np.random.uniform(-10, 10, (n, 1))
+
+    types = ["hadamard_product", "hadamard_with_pairwise", "hadamard_gaussian_promax", "reduced_matrix"]
+    labels = {
+        "hadamard_product": "-b * Ax <= 0",
+        "hadamard_with_pairwise": "-b * Ax <= 0 ∪ Pairwise",
+        "hadamard_gaussian_promax": "-b * Ax <= 0 ∪ G'",
+        "reduced_matrix": "-b * A_reduced * x <= 0 ∪ Pairwise"
+    }
+
+    lambda_values = [0.1, 1, 1.5]
+    beta_values = [1, 2, 5]
+
+    with PdfPages('output_plots.pdf') as pdf:
+        for lmbd in lambda_values:
+            for beta in beta_values:
+
+                histories = {
+                    "accuracy": {},
+                    "error": {}
+                }
+                print(f"\nRunning experiments for lambda (alpha) = {lmbd} and beta = {beta}")
+                for type_ in types:
+                    print(f"  Running SKM for type: {labels[type_]}")
+                    accuracy_experiments = []
+                    error_experiments = []
+
+                    for _ in range(15):
+                        xk_history, accuracy_history, error_history = sampling_kaczmarz_motzkins(
+                            A=G,
+                            x_star=x_star,
+                            beta=beta,
+                            lambd=lmbd,
+                            k=k,
+                            type_=type_
+                        )
+                        accuracy_experiments.append(accuracy_history)
+                        error_experiments.append(error_history)
+
+                    avg_accuracy = np.mean(accuracy_experiments, axis=0)
+                    avg_error = np.mean(error_experiments, axis=0)
+                    histories["accuracy"][labels[type_]] = avg_accuracy
+                    histories["error"][labels[type_]] = avg_error
+
+                plt.figure(figsize=(14, 6))
+
+                # Accuracy Plot
+                plt.subplot(1, 2, 1)
+                for label in labels.values():
+                    plt.plot(range(1, k + 1), histories["accuracy"][label], label=label)
+                plt.xlabel('Iterations')
+                plt.ylabel('Accuracy')
+                plt.title(f'Accuracy (lambda={lmbd}, beta={beta})')
+                plt.legend()
+                plt.grid(True)
+
+                # Error Plot with Logarithmic Scale
+                plt.subplot(1, 2, 2)
+                for label in labels.values():
+                    plt.plot(range(1, k + 1), histories["error"][label], label=label)
+                plt.xlabel('Iterations')
+                plt.ylabel('Approximation Error ||xk - x*||²')
+                plt.yscale('log')
+                plt.ylim(1e-12, 1e2)
+                plt.title(f'Error (lambda={lmbd}, beta={beta})')
+                plt.legend()
+                plt.grid(True, which="both", ls="--", linewidth=0.5)
+
+                plt.tight_layout()
+                pdf.savefig()
+                plt.close()
+
+                print(f"\nFinal Results after {k} iterations for lambda={lmbd} and beta={beta}:")
+                for label in labels.values():
+                    final_accuracy = histories["accuracy"][label][-1]
+                    final_error = histories["error"][label][-1]
+                    print(f"  Type {label}:")
+                    print(f"    Accuracy: {final_accuracy * 100:.2f}%")
+                    print(f"    Approximation Error: {final_error:.12f}\n")
+
+    print("\nAll plots have been saved to 'output_plots.pdf'.")
+
+if __name__ == "__main__":
+    run_experiments()
