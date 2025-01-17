@@ -23,6 +23,29 @@ def hadamard_product(A, b):
     B = np.transpose(B)
     return -1 * A * B
 
+def linear_feasibility_linprog_mod(A, y):
+    m, n = A.shape
+
+    x = cp.Variable(n)
+    t = cp.Variable()
+    constraints = [
+        y[i] * (A[i, :] @ x) >= t for i in range(m)
+    ]
+
+    constraints += [
+        cp.norm(x, 2) <= 1,
+        t <= 1
+    ]
+
+    objective = cp.Maximize(t)
+    prob = cp.Problem(objective, constraints)
+    prob.solve()
+
+    x_opt = x.value
+    t_opt = t.value
+
+    return x_opt, t_opt, prob
+
 def general_SKM(A, x_star, beta, lambd, k, type_, normalize=True):
     m, n = A.shape
     if normalize:
