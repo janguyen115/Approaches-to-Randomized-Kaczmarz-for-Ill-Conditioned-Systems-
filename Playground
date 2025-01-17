@@ -23,10 +23,50 @@ def hadamard_product(A, b):
     B = np.transpose(B)
     return -1 * A * B
 
-def sampling_kaczmarz_motzkins(A, x_star, beta, lambd, k, type_, normalize=True):
-    if type_ not in ["hadamard_product", "hadamard_with_pairwise", "hadamard_gaussian_promax", "reduced_matrix"]:
-        raise ValueError("Invalid type. Choose from 'hadamard_product', 'hadamard_with_pairwise', or 'hadamard_gaussian_promax', or 'reduced_matrix'.")
+def general_SKM(A, x_star, beta, lambd, k, type_, normalize=True):
+    m, n = A.shape
+    if normalize:
+        norm_xk = np.linalg.norm(x_star)
+        if norm_xk != 0:
+            x_star = x_star / norm_xk
 
+    main_matrix = hadamard_product(A, bi_sign(A @ x_star))
+    xk = np.ones(n)
+    xk_history = [xk.copy()]
+    accuracy_history = []
+    error_history = []
+    lp = lambd
+
+    initial_signs = bi_sign(main_matrix @ x_star).ravel()
+    for iter_num in range(1, k + 1):
+        set_of_indexes = np.random.choice(m, beta, replace=False)
+        product = (main_matrix[set_of_indexes, :] @ xk).ravel()
+        max_element_index = 0
+        for i in range(len(product)):
+            if product[i] > product[max_element_index]:
+                max_element_index = i
+
+
+        max_row = main_matrix[set_of_indexes[max_element_index]]
+        max_projection = product[max_element_index]
+
+        xk = xk - (lambd * max(max_projection, 0)) * max_row
+
+        if normalize:
+            norm_xk = np.linalg.norm(xk)
+            if norm_xk != 0:
+                xk = xk / norm_xk
+
+        xk_history.append(xk.copy())
+        accuracy_history.append(np.sum(bi_sign(main_matrix @ xk).ravel() == initial_signs) / m)
+
+        error = np.linalg.norm(xk - x_star.ravel()) ** 2
+        error_history.append(error)
+
+    return xk_history, accuracy_history, error_history
+
+
+def sampling_kaczmarz_motzkins(A, x_star, beta, lambd, k, type_, normalize=True, optimize=True):
     m, n = A.shape
     if normalize:
         norm_xk = np.linalg.norm(x_star)
@@ -38,7 +78,7 @@ def sampling_kaczmarz_motzkins(A, x_star, beta, lambd, k, type_, normalize=True)
     if type_ == "hadamard_product":
         additional_matrix = None
 
-    if type_ == "hadamard_with_pairwise":
+    if type_ == "hadamard_with_pairwise" or "hadamard_with_pairwise_optimized":
         pairwise_rows = []
         for i in range(m * 10):
             set_of_indexes = np.random.choice(m, 2, replace=False)
@@ -53,7 +93,7 @@ def sampling_kaczmarz_motzkins(A, x_star, beta, lambd, k, type_, normalize=True)
 
     if type_ == "reduced_matrix":
         gaussian_rows = []
-        fixed_size = max(30, int(m * 0.05))
+        fixed_size = max(100, int(m * 0.05))
         set_of_indexes = np.random.choice(m, fixed_size, replace=False)
         for i in set_of_indexes:
             for j in set_of_indexes:
@@ -109,7 +149,10 @@ def sampling_kaczmarz_motzkins(A, x_star, beta, lambd, k, type_, normalize=True)
             if type_ == "reduced_matrix":
                 min_projection = product[min_element_index]
 
-        xk = xk - (lambd * max(min_projection, 0)) * min_row
+        if(iter_num % 10 == 0 and optimize):
+            xk = xk - (max(min_projection, 0)) * min_row
+        else:
+            xk = xk - (lambd * max(max_projection, 0)) * max_row
 
         if normalize:
             norm_xk = np.linalg.norm(xk)
@@ -128,20 +171,22 @@ def sampling_kaczmarz_motzkins(A, x_star, beta, lambd, k, type_, normalize=True)
 def run_experiments():
     m = 1000
     n = 10
-    k = 2000
-    G = std_matrix(np.random.randn(m, n))
+    k = 5000
+    G = std_matrix(np.random.uniform(-10, 10, (m, n)))
     x_star = np.random.uniform(-10, 10, (n, 1))
 
-    types = ["hadamard_product", "hadamard_with_pairwise", "hadamard_gaussian_promax", "reduced_matrix"]
+    types = ["hadamard_product", "hadamard_with_pairwise", "hadamard_gaussian_promax", "reduced_matrix", "hadamard_with_pairwise_optimized"]
     labels = {
         "hadamard_product": "-b * Ax <= 0",
         "hadamard_with_pairwise": "-b * Ax <= 0 ∪ Pairwise",
         "hadamard_gaussian_promax": "-b * Ax <= 0 ∪ G'",
-        "reduced_matrix": "-b * A_reduced * x <= 0 ∪ Pairwise"
+        "reduced_matrix": "-b * A_reduced * x <= 0 ∪ Pairwise",
+        "hadamard_with_pairwise_optimized": "-b * Ax <= 0 ∪ Pairwise + optimized"
     }
 
-    lambda_values = [0.1, 1, 1.5]
-    beta_values = [1, 2, 5]
+
+    lambda_values = [2]
+    beta_values = [10]
 
     with PdfPages('output_plots.pdf') as pdf:
         for lmbd in lambda_values:
@@ -157,17 +202,37 @@ def run_experiments():
                     accuracy_experiments = []
                     error_experiments = []
 
-                    for _ in range(15):
-                        xk_history, accuracy_history, error_history = sampling_kaczmarz_motzkins(
-                            A=G,
-                            x_star=x_star,
-                            beta=beta,
-                            lambd=lmbd,
-                            k=k,
-                            type_=type_
-                        )
-                        accuracy_experiments.append(accuracy_history)
-                        error_experiments.append(error_history)
+                    if type_ == "hadamard_product":
+                        for _ in range(15):
+                            xk_history, accuracy_history, error_history = general_SKM(
+                                A=G,
+                                x_star=x_star,
+                                beta=beta,
+                                lambd=lmbd,
+                                k=k,
+                                type_=type_
+                            )
+                            accuracy_experiments.append(accuracy_history)
+                            error_experiments.append(error_history)
+
+                    else:
+                        ok = False
+                        if(type_ == "hadamard_with_pairwise_optimized"):
+                            ok = True
+
+                        for _ in range(15):
+                            xk_history, accuracy_history, error_history = sampling_kaczmarz_motzkins(
+                                A=G,
+                                x_star=x_star,
+                                beta=beta,
+                                lambd=lmbd,
+                                k=k,
+                                type_=type_,
+                                optimize=ok
+                            )
+                            accuracy_experiments.append(accuracy_history)
+                            error_experiments.append(error_history)
+
 
                     avg_accuracy = np.mean(accuracy_experiments, axis=0)
                     avg_error = np.mean(error_experiments, axis=0)
@@ -176,7 +241,6 @@ def run_experiments():
 
                 plt.figure(figsize=(14, 6))
 
-                # Accuracy Plot
                 plt.subplot(1, 2, 1)
                 for label in labels.values():
                     plt.plot(range(1, k + 1), histories["accuracy"][label], label=label)
@@ -186,7 +250,6 @@ def run_experiments():
                 plt.legend()
                 plt.grid(True)
 
-                # Error Plot with Logarithmic Scale
                 plt.subplot(1, 2, 2)
                 for label in labels.values():
                     plt.plot(range(1, k + 1), histories["error"][label], label=label)
@@ -214,3 +277,4 @@ def run_experiments():
 
 if __name__ == "__main__":
     run_experiments()
+
