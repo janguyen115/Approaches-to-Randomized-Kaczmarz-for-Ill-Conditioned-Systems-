@@ -154,17 +154,17 @@ class Pairwise_SKM:
 
         elif method in ("hadamard_with_pairwise", "hadamard_with_pairwise_optimized"):
             m, n = A.shape
-            pairwise_rows = std_matrix(self._construct_the_most_orthogonal(A, x_star))
-            return self._hadamard_product(pairwise_rows, self._bi_sign(pairwise_rows @ x_star))
-
-        elif method == "hadamard_gaussian_promax":
-            m, n = A.shape
             pairwise_rows = []
             for i in range(m * 10):
                 set_of_indexes = np.random.choice(m, 2, replace=False)
                 pairwise_rows.append(A[set_of_indexes[0], :] - A[set_of_indexes[1], :])
 
             gaussian_rows = self._std_matrix(pairwise_rows)
+            return self._hadamard_product(gaussian_rows, self._bi_sign(gaussian_rows @ x_star))
+
+        elif method == "hadamard_gaussian_promax":
+            m, n = A.shape
+            gaussian_rows = std_matrix(np.random.randn(m, n))
             return self._hadamard_product(gaussian_rows, self._bi_sign(gaussian_rows @ x_star))
 
         elif method == "reduced_matrix":
@@ -178,6 +178,11 @@ class Pairwise_SKM:
                         gaussian_rows.append(A[i, :] - A[j, :])
             gaussian_rows = self._std_matrix(np.array(gaussian_rows))
             return self._hadamard_product(gaussian_rows, self._bi_sign(gaussian_rows @ x_star))
+
+        elif method == "sanity_check":
+            m, n = A.shape
+            pairwise_rows = std_matrix(self.sanity_check_matrix(A, x_star))
+            return self._hadamard_product(pairwise_rows, self._bi_sign(pairwise_rows @ x_star))
 
         else:
             return None
@@ -216,6 +221,10 @@ class Pairwise_SKM:
             min_val = product_main[min_idx_main]
 
             if add_matrix is not None:
+                if self.method_type == "sanity_check" or self.method_type == "reduced_matrix":
+                    max_val = 0
+                    min_val = 0
+
                 add_idx = np.random.choice(add_matrix.shape[0], self.beta, replace=False)
                 product_add = add_matrix[add_idx, :] @ xk
 
@@ -260,7 +269,9 @@ def run_experiments():
     n = 10
     k = 2000
 
-    G = std_matrix(generate_ill_conditioned_matrix(m, n))
+    # G = std_matrix(generate_ill_conditioned_matrix(m, n))
+    G = std_matrix(np.random.randn(m, n))
+
     x_star = np.random.uniform(-10, 10, (n, 1))
 
     chebyshev_center = linear_feasibility_linprog_mod(G, G @ x_star)
@@ -271,6 +282,7 @@ def run_experiments():
         "hadamard_gaussian_promax",
         "reduced_matrix",
         "hadamard_with_pairwise_optimized",
+        "sanity_check"
     ]
 
     labels = {
@@ -278,7 +290,8 @@ def run_experiments():
         "hadamard_with_pairwise": "-b * Ax <= 0 ∪ Pairwise",
         "hadamard_gaussian_promax": "-b * Ax <= 0 ∪ G'",
         "reduced_matrix": "-b * A_reduced * x <= 0 ∪ Pairwise",
-        "hadamard_with_pairwise_optimized": "-b * Ax <= 0 ∪ Pairwise + optimized"
+        "hadamard_with_pairwise_optimized": "-b * Ax <= 0 ∪ Pairwise + optimized",
+        "sanity_check": "sanity_check reduced to 2 * n by n matrix"
     }
 
     lambda_values = [2]
