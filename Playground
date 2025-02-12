@@ -52,15 +52,16 @@ def cluster_using_random_vectors(A, num_clusters=10):
     clusters = np.argmax(similarities, axis=1)
     return clusters
 
-def cluster_around_the_point(A, x_k):
+def cluster_around_the_point(A, x_k, indexes):
     m, n = A.shape
     row_abs_proj = []
-    for j in range(m):
-        row_abs_proj.append((np.dot(A[j, :], x_k), A[j, :]))
+    for j in indexes:
+        row_abs_proj.append((np.dot(A[j, :], x_k), j))
 
     row_abs_proj.sort(key=lambda x: x[0], reverse=True)
-    selected_rows = [item[1] for item in row_abs_proj[:min(m, 2 * n)]]
-    return np.array(selected_rows)
+    selected_rows = [A[item[1], :] for item in row_abs_proj[:min(len(indexes), 2 * n)]]
+    indexes = [item[1] for item in row_abs_proj[:max(len(indexes) // 2, 4 * n)]]
+    return np.array(selected_rows), indexes
 
 def quick_SKM_to_define_the_best_cluster(cluster):
     pass
@@ -204,7 +205,7 @@ class Pairwise_SKM:
         for j in range(m):
             row_abs_proj.append((np.dot(A[j, :], x_star), A[j, :]))
 
-        row_abs_proj.sort(key=lambda x: x[0], reverse=True)
+        row_abs_proj.sort(key=lambda x: x[0], reverse=False)
         selected_rows = [item[1] for item in row_abs_proj[:min(m, 10 * n)]]
         return np.array(selected_rows)
 
@@ -268,6 +269,8 @@ class Pairwise_SKM:
         main_matrix = self.main_matrix
         add_matrix = self.additional_matrix
 
+        indexes = [i for i in range(m)]
+        set_of_pinpoins = [100, 200, 400, 800, 1600]
         xk = np.ones(n)
         xk_history = [xk.copy()]
         accuracy_history = []
@@ -308,8 +311,8 @@ class Pairwise_SKM:
                     min_row = add_matrix[add_idx[min_idx_add]]
 
             if self.method_type == "clustering_reducing":
-                if it % 100 == 0:
-                    add_matrix = cluster_around_the_point(main_matrix, xk)
+                if it in set_of_pinpoins:
+                    add_matrix, indexes = cluster_around_the_point(main_matrix, xk, indexes)
 
             if self.optimize and it % 100 == 0:
                 if max_val > 0:
@@ -339,7 +342,7 @@ class Pairwise_SKM:
 def run_experiments():
     m = 2000
     n = 20
-    k = 1000
+    k = 2000
 
     #G = std_matrix(generate_ill_conditioned_matrix(m, n))
     G = std_matrix(np.random.randn(m, n))
@@ -367,8 +370,8 @@ def run_experiments():
         "clustering_reducing" : f"clustering set that reduces to a fixed number of clusters (m = {m}, n = {n})"
     }
 
-    lambda_values = [0.1, 0.2, 0.5, 1, 1.5, 2]
-    beta_values = [1, 2, 5, 10]
+    lambda_values = [0.1, 0.2, 0.25]
+    beta_values = [1]
 
     with PdfPages('output_plots.pdf') as pdf:
         for lmbd in lambda_values:
