@@ -15,23 +15,17 @@ from collections import defaultdict
 def cluster(A, x_star):
     m, n = A.shape
     num_clusters = int(m / n)
-
     kmeans = KMeans(n_clusters=num_clusters, n_init=10, random_state=42)
     labels = kmeans.fit_predict(A)
-
     partitioning = defaultdict(list)
     for index, label in enumerate(labels):
         partitioning[label].append(index)
-
     the_best_rows = []
     partitioning = dict(partitioning)
-
     for cluster_label, indices in partitioning.items():
         score = abs(A[indices[0], :] @ x_star)
         the_best_rows.append((score, cluster_label))
-
     the_best_rows.sort()
-
     best_cluster_label = the_best_rows[0][1]
     return partitioning[best_cluster_label]
 
@@ -44,11 +38,9 @@ def cluster_using_random_vectors(A, num_clusters=10):
         vec_unit = vec / norm if norm != 0 else vec
         random_vectors.append(vec_unit)
     random_vectors = np.array(random_vectors)
-
     norms = np.linalg.norm(A, axis=1, keepdims=True)
     A_normalized = np.divide(A, norms, out=np.zeros_like(A), where=norms != 0)
     similarities = np.dot(A_normalized, random_vectors.T)
-
     clusters = np.argmax(similarities, axis=1)
     return clusters
 
@@ -57,14 +49,10 @@ def cluster_around_the_point(A, x_k, indexes):
     row_abs_proj = []
     for j in indexes:
         row_abs_proj.append((np.dot(A[j, :], x_k), j))
-
     row_abs_proj.sort(key=lambda x: x[0], reverse=True)
     selected_rows = [A[item[1], :] for item in row_abs_proj[:min(len(indexes), 2 * n)]]
     indexes = [item[1] for item in row_abs_proj[:max(len(indexes) // 2, 4 * n)]]
     return np.array(selected_rows), indexes
-
-def quick_SKM_to_define_the_best_cluster(cluster):
-    pass
 
 def std_matrix(mat):
     row_norms = np.linalg.norm(mat, axis=1, keepdims=True)
@@ -96,10 +84,8 @@ def generate_ill_conditioned_matrix(m, n):
 
 def linear_feasibility_linprog_mod(A, y):
     m, n = A.shape
-
     x = cp.Variable(n)
     t = cp.Variable()
-
     constraints = [
         y[i] * (A[i, :] @ x) >= t for i in range(m)
     ]
@@ -107,11 +93,9 @@ def linear_feasibility_linprog_mod(A, y):
         cp.norm(x, 2) <= 1,
         t <= 1
     ]
-
     objective = cp.Maximize(t)
     prob = cp.Problem(objective, constraints)
     prob.solve()
-
     x_opt = x.value
     return x_opt
 
@@ -138,6 +122,7 @@ class Pairwise_SKM:
         self.optimize = optimize
         self.b_sign = self._bi_sign(A @ self.x_star)
         self.main_matrix = self._hadamard_product(A, self.b_sign)
+        self.cluster_index, self.clusters = self.cluster_by_linear_independence(A)
         self.additional_matrix = self._prepare_additional_matrix()
 
     def _bi_sign(self, vec: np.ndarray) -> np.ndarray:
@@ -151,14 +136,38 @@ class Pairwise_SKM:
     def _hadamard_product(self, A: np.ndarray, b: np.ndarray) -> np.ndarray:
         m, n = A.shape
         b = b.ravel()
-
         B = []
         for i in range(n):
             B.append(b)
-
         B = np.array(B)
         B = np.transpose(B)
         return self._std_matrix(-1 * A * B)
+
+    def cluster_by_linear_independence(self, A, epsilon = 0.0005, P = 50):
+        m, n = A.shape
+        clusters = [None for i in range(P)]
+        cluster_index = [[] for i in range(P)]
+        max_index = 0
+        for i in range(m):
+            if clusters[0] is None:
+                clusters[0] = A[i, :].copy()
+                cluster_index[0].append(i)
+                max_index += 1
+            else:
+                best_cluster = []
+                for j in range(max_index):
+                    rep = clusters[j]
+                    best_cluster.append(((np.dot(A[i, :], rep)) / len(cluster_index[j]), j))
+                best_cluster.sort(key=lambda x: x[0])
+                if best_cluster[0][0] < epsilon or max_index >= P:
+                    cluster_index[best_cluster[0][1]].append(i)
+                    clusters[best_cluster[0][1]] = clusters[best_cluster[0][1]] + A[i, :]
+                else:
+                    clusters[max_index] = A[i, :].copy()
+                    cluster_index[max_index].append(i)
+                    max_index += 1
+        # print(len(np.array(cluster_index[:max_index], dtype=object)))
+        return np.array(cluster_index[:max_index], dtype=object), np.array(clusters[:max_index])
 
     def _construct_the_most_orthogonal_pairwise_difference(self, A: np.ndarray, x_star: np.ndarray) -> np.ndarray:
         m, n = A.shape
@@ -167,11 +176,9 @@ class Pairwise_SKM:
             for j in range(m):
                 if i != j:
                     pairwise_rows.append(A[i, :] - A[j, :])
-
         row_abs_proj = []
         for row in pairwise_rows:
             row_abs_proj.append((abs(row @ x_star), row))
-
         row_abs_proj.sort(key = lambda x: x[0], reverse=True)
         selected_rows = [item[1] for item in row_abs_proj[:m]]
         return np.array(selected_rows)
@@ -180,21 +187,18 @@ class Pairwise_SKM:
         m, n = A.shape
         pairwise_rows = []
         for i in range(m):
-            pairwise_rows.append(A[i, :], i)
-
+            pairwise_rows.append((A[i, :], i))
         row_abs_proj = []
         for row, index in pairwise_rows:
             row_abs_proj.append((abs(row @ x_star), index))
-
         row_abs_proj.sort(key=lambda x: x[0], reverse=True)
         selected_rows = [item[1] for item in row_abs_proj[: min(10 * n, m)]]
         return selected_rows
 
     def intersection_of_the_best_set(self, A: np.ndarray, x_star: np.ndarray):
         m, n = A.shape
-        rows_by_cluster = cluster(A)
+        rows_by_cluster = cluster(A, x_star)
         best_rows = self._construct_the_most_orthogonal_set_of_indexes(A, x_star)
-
         rows_by_cluster = set(rows_by_cluster)
         best_rows = set(best_rows)
         return rows_by_cluster.intersection(best_rows)
@@ -204,7 +208,6 @@ class Pairwise_SKM:
         row_abs_proj = []
         for j in range(m):
             row_abs_proj.append((np.dot(A[j, :], x_star), A[j, :]))
-
         row_abs_proj.sort(key=lambda x: x[0], reverse=False)
         selected_rows = [item[1] for item in row_abs_proj[:min(m, 10 * n)]]
         return np.array(selected_rows)
@@ -213,25 +216,20 @@ class Pairwise_SKM:
         A = self.A
         x_star = self.x_star
         method = self.method_type
-
         if method == "hadamard_product":
             return None
-
         elif method in ("hadamard_with_pairwise", "hadamard_with_pairwise_optimized"):
             m, n = A.shape
             pairwise_rows = []
             for i in range(m * 10):
                 set_of_indexes = np.random.choice(m, 2, replace=False)
                 pairwise_rows.append(A[set_of_indexes[0], :] - A[set_of_indexes[1], :])
-
             gaussian_rows = self._std_matrix(pairwise_rows)
             return self._hadamard_product(gaussian_rows, self._bi_sign(gaussian_rows @ x_star))
-
         elif method == "hadamard_gaussian_promax":
             m, n = A.shape
             gaussian_rows = std_matrix(np.random.randn(10 * m, n))
             return self._hadamard_product(gaussian_rows, self._bi_sign(gaussian_rows @ x_star))
-
         elif method == "reduced_matrix":
             m, n = A.shape
             fixed_size = max(100, int(m * 0.05))
@@ -243,16 +241,18 @@ class Pairwise_SKM:
                         gaussian_rows.append(A[i, :] - A[j, :])
             gaussian_rows = self._std_matrix(np.array(gaussian_rows))
             return self._hadamard_product(gaussian_rows, self._bi_sign(gaussian_rows @ x_star))
-
         elif method == "sanity_check":
             m, n = A.shape
             pairwise_rows = std_matrix(self.sanity_check_matrix(A, x_star))
             return self._hadamard_product(pairwise_rows, self._bi_sign(pairwise_rows @ x_star))
-
         elif method == "clustering_reducing":
             m, n = A.shape
             cluster_best_ = cluster_using_random_vectors(A)
             return self._hadamard_product(A[cluster_best_], self._bi_sign(self.b[cluster_best_]))
+        elif method == "linear_dependence":
+            indices = np.array(self.cluster_index[0], dtype=int)
+            return self._std_matrix(A[indices, :])
+
         else:
             return None
 
@@ -264,89 +264,75 @@ class Pairwise_SKM:
             norm_x_star = np.linalg.norm(self.x_star)
             if norm_x_star != 0:
                 self.x_star = self.x_star / norm_x_star
-
         m, n = self.A.shape
         main_matrix = self.main_matrix
         add_matrix = self.additional_matrix
-
         indexes = [i for i in range(m)]
         set_of_pinpoins = [100, 200, 400, 800, 1600]
         xk = np.ones(n)
         xk_history = [xk.copy()]
         accuracy_history = []
         error_history = []
-
         initial_signs = self._bi_sign(main_matrix @ self.x_star).ravel()
-
         for it in range(1, self.k + 1):
             idx = np.random.choice(m, self.beta, replace=False)
             product_main = main_matrix[idx, :] @ xk
-
             max_idx_main = np.argmax(product_main)
             min_idx_main = np.argmin(product_main)
-
             max_row = main_matrix[idx[max_idx_main]]
             max_val = product_main[max_idx_main]
-
             min_row = main_matrix[idx[min_idx_main]]
             min_val = product_main[min_idx_main]
-
             if add_matrix is not None:
-                if self.method_type == "sanity_check" or self.method_type == "reduced_matrix" or self.method_type == "hadamard_with_pairwise" or self.method_type == "hadamard_with_pairwise_optimized" or self.method_type == "clustering_reducing":
+                if self.method_type == "linear_dependence" or self.method_type == "sanity_check" or self.method_type == "reduced_matrix" or self.method_type == "hadamard_with_pairwise" or self.method_type == "hadamard_with_pairwise_optimized" or self.method_type == "clustering_reducing":
                     max_val = 0
                     min_val = 0
-
                 add_idx = np.random.choice(add_matrix.shape[0], self.beta, replace=False)
                 product_add = add_matrix[add_idx, :] @ xk
-
                 max_idx_add = np.argmax(product_add)
                 min_idx_add = np.argmin(product_add)
-
                 if product_add[max_idx_add] > max_val:
                     max_val = product_add[max_idx_add]
                     max_row = add_matrix[add_idx[max_idx_add]]
-
                 if product_add[min_idx_add] < min_val:
                     min_val = product_add[min_idx_add]
                     min_row = add_matrix[add_idx[min_idx_add]]
 
+            if self.method_type == "linear_dependence" and (it in set_of_pinpoins or it == 4):
+                a = []
+                for i in range(len(self.clusters)):
+                    a.append((np.dot(self.clusters[i], xk), i))
+                a.sort(key=lambda x: x[0])
+                indices = np.array(self.cluster_index[a[0][1]], dtype=int)
+                add_matrix = std_matrix(main_matrix[indices, :])
+
             if self.method_type == "clustering_reducing":
                 if it in set_of_pinpoins:
                     add_matrix, indexes = cluster_around_the_point(main_matrix, xk, indexes)
-
             if self.optimize and it % 100 == 0:
                 if max_val > 0:
                     step_size = max_val ** 2 * self.lambd
                     xk = xk - step_size * min_row
-                else:
-                    pass
             else:
                 if max_val > 0:
                     xk = xk - (self.lambd * max_val) * max_row
-
             if self.normalize:
                 norm_xk = np.linalg.norm(xk)
                 if norm_xk != 0:
                     xk = xk / norm_xk
-
             xk_history.append(xk.copy())
             current_signs = self._bi_sign(main_matrix @ xk).ravel()
             accuracy = np.sum(current_signs == initial_signs) / m
             accuracy_history.append(accuracy)
-
             error_val = np.linalg.norm(xk - self.x_star) ** 2
             error_history.append(error_val)
-
         return xk_history, accuracy_history, error_history
 
 def run_experiments():
     m = 2000
     n = 20
     k = 2000
-
-    #G = std_matrix(generate_ill_conditioned_matrix(m, n))
     G = std_matrix(np.random.randn(m, n))
-
     x_star = np.random.uniform(-10, 10, (n, 1))
     chebyshev_center = linear_feasibility_linprog_mod(G, G @ x_star)
 
@@ -357,7 +343,8 @@ def run_experiments():
         "hadamard_gaussian_promax",
         "reduced_matrix",
         "hadamard_with_pairwise_optimized",
-        "sanity_check"
+        "sanity_check",
+        "linear_dependence"
     ]
 
     labels = {
@@ -367,29 +354,26 @@ def run_experiments():
         "reduced_matrix": f"-b * A_reduced * x <= 0 ∪ Pairwise (m = {m}, n = {n})",
         "hadamard_with_pairwise_optimized": f"-b * Ax <= 0 ∪ Pairwise + optimized (m = {(max(100, int(m * 0.05))) ** 2}, n = {n})",
         "sanity_check": f"sanity_check reduced to 2 * n by n matrix (m = {2 * n}, n = {n})",
-        "clustering_reducing" : f"clustering set that reduces to a fixed number of clusters (m = {m}, n = {n})"
+        "clustering_reducing" : f"clustering set that reduces to a fixed number of clusters (m = {m}, n = {n})",
+        "linear_dependence" : f"clustering set by linear dependence (m = {m}, n = {n})"
     }
 
-    lambda_values = [0.1, 0.2, 0.25]
-    beta_values = [1]
 
+    lambda_values = [0.1, 1, 1.5, 2]
+    beta_values = [1, 2, 5, 10]
     with PdfPages('output_plots.pdf') as pdf:
         for lmbd in lambda_values:
             for beta in beta_values:
-
                 histories = {
                     "accuracy": {},
                     "error": {}
                 }
-
                 print(f"\nRunning experiments for lambda (alpha) = {lmbd} and beta = {beta}")
-
                 for method_type in types:
                     print(f"  Running SKM for type: {labels[method_type]}")
                     accuracy_experiments = []
                     error_experiments = []
                     optimize_flag = (method_type == "hadamard_with_pairwise_optimized")
-
                     for _ in range(15):
                         skm_solver = Pairwise_SKM(
                             A=G,
@@ -402,19 +386,14 @@ def run_experiments():
                             normalize=True,
                             optimize=optimize_flag
                         )
-
                         xk_history, accuracy_history, error_history = skm_solver.run()
                         accuracy_experiments.append(accuracy_history)
                         error_experiments.append(error_history)
-
                     avg_accuracy = np.mean(accuracy_experiments, axis=0)
                     avg_error = np.mean(error_experiments, axis=0)
-
                     histories["accuracy"][labels[method_type]] = avg_accuracy
                     histories["error"][labels[method_type]] = avg_error
-
                 plt.figure(figsize=(14, 6))
-
                 plt.subplot(1, 2, 1)
                 for label in labels.values():
                     plt.plot(range(1, k + 1), histories["accuracy"][label], label=label)
@@ -423,7 +402,6 @@ def run_experiments():
                 plt.title(f'Accuracy (lambda={lmbd}, beta={beta}, m = {m}, n = {n})')
                 plt.legend()
                 plt.grid(True)
-
                 plt.subplot(1, 2, 2)
                 for label in labels.values():
                     plt.plot(range(1, k + 1), histories["error"][label], label=label)
@@ -434,11 +412,9 @@ def run_experiments():
                 plt.title(f'Error (lambda={lmbd}, beta={beta}, m = {m}, n = {n})')
                 plt.legend()
                 plt.grid(True, which="both", ls="--", linewidth=0.5)
-
                 plt.tight_layout()
                 pdf.savefig()
                 plt.close()
-
                 print(f"\nFinal Results after {k} iterations (lambda={lmbd}, beta={beta}):")
                 for label in labels.values():
                     final_accuracy = histories["accuracy"][label][-1]
@@ -446,7 +422,6 @@ def run_experiments():
                     print(f"  Type {label}:")
                     print(f"    Accuracy: {final_accuracy * 100:.2f}%")
                     print(f"    Approximation Error: {final_error:.12f}\n")
-
     print("\nAll plots have been saved to 'output_plots.pdf'.")
 
 if __name__ == "__main__":
