@@ -62,6 +62,18 @@ def std_matrix(mat):
 def bi_sign(vec):
     return np.where(vec >= 0, 1, -1)
 
+def find_scalars(projections):
+    sums = 0
+    for i in range(len(projections)):
+        if projections[i] < 0:
+            projections[i] = 0
+        else:
+            sums += projections[i]
+    if(sums != 0):
+        for i in range(len(projections)):
+            projections[i] *= (1 / sums)
+    return projections
+
 def hoffman_constant(A):
     A = np.array(A)
     A_inv = np.linalg.inv(A)
@@ -99,6 +111,13 @@ def linear_feasibility_linprog_mod(A, y):
     x_opt = x.value
     return x_opt
 
+def intersection(a, b):
+    c = []
+    for x in a:
+        if x in b:
+            c.append(x)
+
+    return c
 class Pairwise_SKM:
     def __init__(self,
                 A: np.ndarray,
@@ -109,8 +128,10 @@ class Pairwise_SKM:
                 method_type: str = "hadamard_with_pairwise",
                 chebyshev_center=None,
                 normalize: bool = True,
-                optimize: bool = False):
+                optimize: bool = False,
+                eps = None):
         self.A = A
+        self.eps = eps
         self.x_star = x_star.reshape(-1)
         self.beta = beta
         self.lambd = lambd
@@ -124,6 +145,7 @@ class Pairwise_SKM:
         self.main_matrix = self._hadamard_product(A, self.b_sign)
         self.cluster_index, self.clusters = self.cluster_by_linear_independence(A)
         self.additional_matrix = self._prepare_additional_matrix()
+        self.best_indexes = self.sanity_check_matrix(A, x_star)[1]
 
     def _bi_sign(self, vec: np.ndarray) -> np.ndarray:
         return np.where(vec >= 0, 1, -1)
@@ -143,7 +165,7 @@ class Pairwise_SKM:
         B = np.transpose(B)
         return self._std_matrix(-1 * A * B)
 
-    def cluster_by_linear_independence(self, A, epsilon = 0.0005, P = 50):
+    def cluster_by_linear_independence(self, A, epsilon = 0.005, P = 50):
         m, n = A.shape
         clusters = [None for i in range(P)]
         cluster_index = [[] for i in range(P)]
@@ -166,8 +188,7 @@ class Pairwise_SKM:
                     clusters[max_index] = A[i, :].copy()
                     cluster_index[max_index].append(i)
                     max_index += 1
-        # print(len(np.array(cluster_index[:max_index], dtype=object)))
-        return np.array(cluster_index[:max_index], dtype=object), np.array(clusters[:max_index])
+        return np.array(cluster_index[:max_index], dtype=object), std_matrix(np.array(clusters[:max_index]))
 
     def _construct_the_most_orthogonal_pairwise_difference(self, A: np.ndarray, x_star: np.ndarray) -> np.ndarray:
         m, n = A.shape
@@ -207,16 +228,17 @@ class Pairwise_SKM:
         m, n = A.shape
         row_abs_proj = []
         for j in range(m):
-            row_abs_proj.append((np.dot(A[j, :], x_star), A[j, :]))
+            row_abs_proj.append((np.dot(A[j, :], x_star), A[j, :], j))
         row_abs_proj.sort(key=lambda x: x[0], reverse=False)
-        selected_rows = [item[1] for item in row_abs_proj[:min(m, 10 * n)]]
-        return np.array(selected_rows)
+        selected_rows = [item[1] for item in row_abs_proj[:min(m, 2 * n)]]
+        indexes = [item[2] for item in row_abs_proj[:min(m, 2 * n)]]
+        return np.array(selected_rows), indexes
 
     def _prepare_additional_matrix(self) -> np.ndarray or None: # type: ignore
         A = self.A
         x_star = self.x_star
         method = self.method_type
-        if method == "hadamard_product":
+        if method == "hadamard_product" or method == "RandomBlockSKM":
             return None
         elif method in ("hadamard_with_pairwise", "hadamard_with_pairwise_optimized"):
             m, n = A.shape
@@ -243,7 +265,8 @@ class Pairwise_SKM:
             return self._hadamard_product(gaussian_rows, self._bi_sign(gaussian_rows @ x_star))
         elif method == "sanity_check":
             m, n = A.shape
-            pairwise_rows = std_matrix(self.sanity_check_matrix(A, x_star))
+            pairwise_rows, self.best_indexes = self.sanity_check_matrix(A, x_star)
+            pairwise_rows = std_matrix(pairwise_rows)
             return self._hadamard_product(pairwise_rows, self._bi_sign(pairwise_rows @ x_star))
         elif method == "clustering_reducing":
             m, n = A.shape
@@ -252,12 +275,41 @@ class Pairwise_SKM:
         elif method == "linear_dependence":
             indices = np.array(self.cluster_index[0], dtype=int)
             return self._std_matrix(A[indices, :])
-
         else:
             return None
 
     def _changing_lambda(self, x, lambd):
         return 2 - 1 / (1 + math.exp(-lambd + x))
+
+    def run_block_karzmarz_weighted(self):
+        if self.normalize:
+            norm_x_star = np.linalg.norm(self.x_star)
+            if norm_x_star != 0:
+                self.x_star = self.x_star / norm_x_star
+
+        m, n = self.A.shape
+        main_matrix = self.main_matrix
+
+        xk = np.ones(n)
+        xk_history = [xk.copy()]
+        accuracy_history = []
+        error_history = []
+        initial_signs = self._bi_sign(main_matrix @ self.x_star).ravel()
+
+        for it in range(1, self.k + 1):
+            idx = np.random.choice(m, self.beta, replace=False)
+            product_main = main_matrix[idx, :] @ xk
+            weights = find_scalars(product_main)
+            for i in range(len(product_main)):
+                xk -= (self.lambd * weights[i]) * main_matrix[idx[i]]
+
+            xk_history.append(xk.copy())
+            current_signs = self._bi_sign(main_matrix @ xk).ravel()
+            accuracy = np.sum(current_signs == initial_signs) / m
+            accuracy_history.append(accuracy)
+            error_val = np.linalg.norm(xk - self.x_star) ** 2
+            error_history.append(error_val)
+        return xk_history, accuracy_history, error_history
 
     def run(self):
         if self.normalize:
@@ -274,155 +326,167 @@ class Pairwise_SKM:
         accuracy_history = []
         error_history = []
         initial_signs = self._bi_sign(main_matrix @ self.x_star).ravel()
-        for it in range(1, self.k + 1):
-            idx = np.random.choice(m, self.beta, replace=False)
-            product_main = main_matrix[idx, :] @ xk
-            max_idx_main = np.argmax(product_main)
-            min_idx_main = np.argmin(product_main)
-            max_row = main_matrix[idx[max_idx_main]]
-            max_val = product_main[max_idx_main]
-            min_row = main_matrix[idx[min_idx_main]]
-            min_val = product_main[min_idx_main]
-            if add_matrix is not None:
-                if self.method_type == "linear_dependence" or self.method_type == "sanity_check" or self.method_type == "reduced_matrix" or self.method_type == "hadamard_with_pairwise" or self.method_type == "hadamard_with_pairwise_optimized" or self.method_type == "clustering_reducing":
-                    max_val = 0
-                    min_val = 0
-                add_idx = np.random.choice(add_matrix.shape[0], self.beta, replace=False)
-                product_add = add_matrix[add_idx, :] @ xk
-                max_idx_add = np.argmax(product_add)
-                min_idx_add = np.argmin(product_add)
-                if product_add[max_idx_add] > max_val:
-                    max_val = product_add[max_idx_add]
-                    max_row = add_matrix[add_idx[max_idx_add]]
-                if product_add[min_idx_add] < min_val:
-                    min_val = product_add[min_idx_add]
-                    min_row = add_matrix[add_idx[min_idx_add]]
 
-            if self.method_type == "linear_dependence" and (it in set_of_pinpoins or it == 4):
-                a = []
-                for i in range(len(self.clusters)):
-                    a.append((np.dot(self.clusters[i], xk), i))
-                a.sort(key=lambda x: x[0])
-                indices = np.array(self.cluster_index[a[0][1]], dtype=int)
-                add_matrix = std_matrix(main_matrix[indices, :])
+        if(self.method_type == "RandomBlockSKM"):
+            for it in range(1, self.k + 1):
+                idx = np.random.choice(m, self.beta, replace=False)
+                product_main = main_matrix[idx, :] @ xk
+                weights = find_scalars(product_main)
+                for i in range(len(product_main)):
+                    xk -= (self.lambd * weights[i]) * main_matrix[idx[i]]
 
-            if self.method_type == "clustering_reducing":
-                if it in set_of_pinpoins:
-                    add_matrix, indexes = cluster_around_the_point(main_matrix, xk, indexes)
-            if self.optimize and it % 100 == 0:
-                if max_val > 0:
-                    step_size = max_val ** 2 * self.lambd
-                    xk = xk - step_size * min_row
-            else:
-                if max_val > 0:
-                    xk = xk - (self.lambd * max_val) * max_row
-            if self.normalize:
-                norm_xk = np.linalg.norm(xk)
-                if norm_xk != 0:
-                    xk = xk / norm_xk
-            xk_history.append(xk.copy())
-            current_signs = self._bi_sign(main_matrix @ xk).ravel()
-            accuracy = np.sum(current_signs == initial_signs) / m
-            accuracy_history.append(accuracy)
-            error_val = np.linalg.norm(xk - self.x_star) ** 2
-            error_history.append(error_val)
-        return xk_history, accuracy_history, error_history
+                xk_history.append(xk.copy())
+                current_signs = self._bi_sign(main_matrix @ xk).ravel()
+                accuracy = np.sum(current_signs == initial_signs) / m
+                accuracy_history.append(accuracy)
+                error_val = np.linalg.norm(xk - self.x_star) ** 2
+                error_history.append(error_val)
+            return xk_history, accuracy_history, error_history
+
+
+        else:
+            for it in range(1, self.k + 1):
+                idx = np.random.choice(m, self.beta, replace=False)
+                product_main = main_matrix[idx, :] @ xk
+                max_idx_main = np.argmax(product_main)
+                min_idx_main = np.argmin(product_main)
+                max_row = main_matrix[idx[max_idx_main]]
+                max_val = product_main[max_idx_main]
+                min_row = main_matrix[idx[min_idx_main]]
+                min_val = product_main[min_idx_main]
+                if add_matrix is not None:
+                    if self.method_type == "linear_dependence" or self.method_type == "sanity_check" or self.method_type == "reduced_matrix" or self.method_type == "hadamard_with_pairwise" or self.method_type == "hadamard_with_pairwise_optimized" or self.method_type == "clustering_reducing":
+                        max_val = 0
+                        min_val = 0
+                    add_idx = np.random.choice(add_matrix.shape[0], self.beta, replace=False)
+                    product_add = add_matrix[add_idx, :] @ xk
+                    max_idx_add = np.argmax(product_add)
+                    min_idx_add = np.argmin(product_add)
+                    if product_add[max_idx_add] > max_val:
+                        max_val = product_add[max_idx_add]
+                        max_row = add_matrix[add_idx[max_idx_add]]
+                    if product_add[min_idx_add] < min_val:
+                        min_val = product_add[min_idx_add]
+                        min_row = add_matrix[add_idx[min_idx_add]]
+
+                if self.method_type == "linear_dependence" and (it in set_of_pinpoins or it == 4):
+                    a = []
+                    for i in range(len(self.clusters)):
+                        a.append((np.dot(self.clusters[i], xk), i))
+                    a.sort(key=lambda x: x[0])
+                    class_indexes = np.array(self.cluster_index[a[0][1]], dtype=int)
+                    add_matrix = std_matrix(main_matrix[class_indexes, :])
+                    if(it == 4):
+                        print(len(class_indexes))
+
+                if self.method_type == "clustering_reducing":
+                    if it in set_of_pinpoins:
+                        add_matrix, indexes = cluster_around_the_point(main_matrix, xk, indexes)
+                        #xk = np.linalg.solve(add_matrix, )
+                if self.optimize and it % 100 == 0:
+                    if max_val > 0:
+                        step_size = max_val ** 2 * self.lambd
+                        xk = xk - step_size * min_row
+                else:
+                    if max_val > 0:
+                        xk = xk - (self.lambd * max_val) * max_row
+                if self.normalize:
+                    norm_xk = np.linalg.norm(xk)
+                    if norm_xk != 0:
+                        xk = xk / norm_xk
+                xk_history.append(xk.copy())
+                current_signs = self._bi_sign(main_matrix @ xk).ravel()
+                accuracy = np.sum(current_signs == initial_signs) / m
+                accuracy_history.append(accuracy)
+                error_val = np.linalg.norm(xk - self.x_star) ** 2
+                error_history.append(error_val)
+            return xk_history, accuracy_history, error_history
 
 def run_experiments():
     m = 2000
     n = 20
     k = 2000
-    G = std_matrix(np.random.randn(m, n))
+    G = std_matrix(generate_ill_conditioned_matrix(m, n))
+    G = np.array(G)
     x_star = np.random.uniform(-10, 10, (n, 1))
     chebyshev_center = linear_feasibility_linprog_mod(G, G @ x_star)
 
     types = [
-        "clustering_reducing",
-        "hadamard_product",
-        "hadamard_with_pairwise",
-        "hadamard_gaussian_promax",
-        "reduced_matrix",
-        "hadamard_with_pairwise_optimized",
-        "sanity_check",
-        "linear_dependence"
+        "RandomBlockSKM"
     ]
 
     labels = {
-        "hadamard_product": f"-b * Ax <= 0 (m = {m}, n = {n})",
-        "hadamard_with_pairwise": f"-b * Ax <= 0 ∪ Pairwise (m = {m}, n = {n})",
-        "hadamard_gaussian_promax": f"-b * Ax <= 0 ∪ G (m = {m}, n = {n})'",
-        "reduced_matrix": f"-b * A_reduced * x <= 0 ∪ Pairwise (m = {m}, n = {n})",
-        "hadamard_with_pairwise_optimized": f"-b * Ax <= 0 ∪ Pairwise + optimized (m = {(max(100, int(m * 0.05))) ** 2}, n = {n})",
-        "sanity_check": f"sanity_check reduced to 2 * n by n matrix (m = {2 * n}, n = {n})",
-        "clustering_reducing" : f"clustering set that reduces to a fixed number of clusters (m = {m}, n = {n})",
-        "linear_dependence" : f"clustering set by linear dependence (m = {m}, n = {n})"
+        "RandomBlockSKM" : f"Use all rows from out random distribution (m = {m}, n = {n})"
     }
 
 
     lambda_values = [0.1, 1, 1.5, 2]
     beta_values = [1, 2, 5, 10]
+    epsilons = [0.1]
     with PdfPages('output_plots.pdf') as pdf:
         for lmbd in lambda_values:
             for beta in beta_values:
-                histories = {
-                    "accuracy": {},
-                    "error": {}
-                }
-                print(f"\nRunning experiments for lambda (alpha) = {lmbd} and beta = {beta}")
-                for method_type in types:
-                    print(f"  Running SKM for type: {labels[method_type]}")
-                    accuracy_experiments = []
-                    error_experiments = []
-                    optimize_flag = (method_type == "hadamard_with_pairwise_optimized")
-                    for _ in range(15):
-                        skm_solver = Pairwise_SKM(
-                            A=G,
-                            x_star=x_star,
-                            beta=beta,
-                            lambd=lmbd,
-                            k=k,
-                            method_type=method_type,
-                            chebyshev_center=chebyshev_center,
-                            normalize=True,
-                            optimize=optimize_flag
-                        )
-                        xk_history, accuracy_history, error_history = skm_solver.run()
-                        accuracy_experiments.append(accuracy_history)
-                        error_experiments.append(error_history)
-                    avg_accuracy = np.mean(accuracy_experiments, axis=0)
-                    avg_error = np.mean(error_experiments, axis=0)
-                    histories["accuracy"][labels[method_type]] = avg_accuracy
-                    histories["error"][labels[method_type]] = avg_error
-                plt.figure(figsize=(14, 6))
-                plt.subplot(1, 2, 1)
-                for label in labels.values():
-                    plt.plot(range(1, k + 1), histories["accuracy"][label], label=label)
-                plt.xlabel('Iterations')
-                plt.ylabel('Accuracy')
-                plt.title(f'Accuracy (lambda={lmbd}, beta={beta}, m = {m}, n = {n})')
-                plt.legend()
-                plt.grid(True)
-                plt.subplot(1, 2, 2)
-                for label in labels.values():
-                    plt.plot(range(1, k + 1), histories["error"][label], label=label)
-                plt.xlabel('Iterations')
-                plt.ylabel('Approximation Error ||xk - x*||²')
-                plt.yscale('log')
-                plt.ylim(1e-12, 1e2)
-                plt.title(f'Error (lambda={lmbd}, beta={beta}, m = {m}, n = {n})')
-                plt.legend()
-                plt.grid(True, which="both", ls="--", linewidth=0.5)
-                plt.tight_layout()
-                pdf.savefig()
-                plt.close()
-                print(f"\nFinal Results after {k} iterations (lambda={lmbd}, beta={beta}):")
-                for label in labels.values():
-                    final_accuracy = histories["accuracy"][label][-1]
-                    final_error = histories["error"][label][-1]
-                    print(f"  Type {label}:")
-                    print(f"    Accuracy: {final_accuracy * 100:.2f}%")
-                    print(f"    Approximation Error: {final_error:.12f}\n")
-    print("\nAll plots have been saved to 'output_plots.pdf'.")
+                for epsilon in epsilons:
+                    histories = {
+                        "accuracy": {},
+                        "error": {}
+                    }
+                    print(f"\nRunning experiments for lambda (alpha) = {lmbd} and beta = {beta} and epsilon = {epsilon}")
+                    for method_type in types:
+                        print(f"  Running SKM for type: {labels[method_type]}")
+                        accuracy_experiments = []
+                        error_experiments = []
+                        optimize_flag = (method_type == "hadamard_with_pairwise_optimized")
+                        for _ in range(15):
+                            skm_solver = Pairwise_SKM(
+                                A=G,
+                                x_star=x_star,
+                                beta=beta,
+                                lambd=lmbd,
+                                k=k,
+                                method_type=method_type,
+                                chebyshev_center=chebyshev_center,
+                                normalize=True,
+                                optimize=optimize_flag,
+                                eps=epsilon
+                            )
+                            xk_history, accuracy_history, error_history = skm_solver.run()
+                            accuracy_experiments.append(accuracy_history)
+                            error_experiments.append(error_history)
+                        avg_accuracy = np.mean(accuracy_experiments, axis=0)
+                        avg_error = np.mean(error_experiments, axis=0)
+                        histories["accuracy"][labels[method_type]] = avg_accuracy
+                        histories["error"][labels[method_type]] = avg_error
+                    plt.figure(figsize=(14, 6))
+                    plt.subplot(1, 2, 1)
+                    for label in labels.values():
+                        plt.plot(range(1, k + 1), histories["accuracy"][label], label=label)
+                    plt.xlabel('Iterations')
+                    plt.ylabel('Accuracy')
+                    plt.title(f'Accuracy (lambda={lmbd}, beta={beta}, m = {m}, n = {n})')
+                    plt.legend()
+                    plt.grid(True)
+                    plt.subplot(1, 2, 2)
+                    for label in labels.values():
+                        plt.plot(range(1, k + 1), histories["error"][label], label=label)
+                    plt.xlabel('Iterations')
+                    plt.ylabel('Approximation Error ||xk - x*||²')
+                    plt.yscale('log')
+                    plt.ylim(1e-12, 1e2)
+                    plt.title(f'Error (lambda={lmbd}, beta={beta}, m = {m}, n = {n})')
+                    plt.legend()
+                    plt.grid(True, which="both", ls="--", linewidth=0.5)
+                    plt.tight_layout()
+                    pdf.savefig()
+                    plt.close()
+                    print(f"\nFinal Results after {k} iterations (lambda={lmbd}, beta={beta}):")
+                    for label in labels.values():
+                        final_accuracy = histories["accuracy"][label][-1]
+                        final_error = histories["error"][label][-1]
+                        print(f"  Type {label}:")
+                        print(f"    Accuracy: {final_accuracy * 100:.2f}%")
+                        print(f"    Approximation Error: {final_error:.12f}\n")
+        print("\nAll plots have been saved to 'output_plots.pdf'.")
 
 if __name__ == "__main__":
     run_experiments()
