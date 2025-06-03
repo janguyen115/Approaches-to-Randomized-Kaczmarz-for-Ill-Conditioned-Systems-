@@ -1,4 +1,4 @@
-function [outputErrWeighted, outputErr] = main(Mat, m, n, maxIter)
+function [outputErrWeighted, outputErr, appErr_weighted, appErr] = main(Mat, m, n, maxIter)
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Generate Ill-Conditioned Matrix
 
@@ -113,8 +113,10 @@ function [outputErrWeighted, outputErr] = main(Mat, m, n, maxIter)
     % grid on;
 
     
-    outputErrWeighted = abs(V'*err_weighted')';
-    outputErr = abs(V'*err')';
+    outputErrWeighted = abs(V'*err_weighted')'; % singular error, dotted with each singular vector
+    outputErr = abs(V'*err')';  % singular error, dotted with each singular vector
+
+    appErr = appErr';
 
 end
 
