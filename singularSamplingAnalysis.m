@@ -2,26 +2,8 @@ function [outputErrWeighted, outputErr] = main(Mat, m, n, maxIter)
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% Generate Ill-Conditioned Matrix
 
-    [U, ~] = qr(randn(m));
-    U(end+1,:) = randn(1, m) * 0.001;
-    U(:, end+1) = randn(m+1, 1) * 0.001;
-    U(end, end) = 1;
-
-    [V, ~] = qr(randn(n));
-    V(end+1,:) = randn(1, n) * 0.001;
-    V(:, end+1) = randn(n+1, 1) * 0.001;
-    V(end, end) = 1;
-    
-    S = zeros(m+1,n+1);
-    singular_values = 1:n ;  % Pre-determine singular values
-    singular_values = sort([singular_values, 0.5], 'descend'); % ensure last singular value is <1
-
-    S(1:n+1, :) = diag(singular_values);
-    A = U * S * V';
-
-    A = randn(m, n+1);
-
     A = Mat;
+
     [U,S,V] = svd(A);
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -130,8 +112,10 @@ function [outputErrWeighted, outputErr] = main(Mat, m, n, maxIter)
     % end
     % grid on;
 
-    outputErrWeighted = abs(err_weighted * V(12,:)');
-    outputErr = abs(err * V(12,:)');
+    
+    outputErrWeighted = abs(V'*err_weighted')';
+    outputErr = abs(V'*err')';
+
 end
 
 function [C] = singularCoefficients(A) % considering SVD is given
