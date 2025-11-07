@@ -1,3 +1,3 @@
-# Adaptive-KaczRank
+# Read Between the Hyperplanes: On Spectral Projection and Sampling Approaches to Randomized Kaczmarz
 
 Following the wake of Randomized Kaczmarz (RK), a row-sampling  iterative projection method to solve large-scale systems $Ax=b$, several adaptations to the method have been produced to inspire faster convergence. Focusing on the case of ill-conditioned linear systems-- systems on which RK algorithms typically struggle--, we highlight inter-row relationships that can be leveraged to inspire directionally aware projections. In particular, we find that improved convergence rates can sometimes be made by (i) projecting onto pairwise row differences, (ii) sampling from partitioned clusters of nearly orthogonal rows, or (iii) more frequently sampling spectrally-diverse rows. 
